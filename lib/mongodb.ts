@@ -84,3 +84,17 @@ const MessageSchema = new mongoose.Schema({
 });
 
 export const MessageModel = mongoose.models.Message || mongoose.model('Message', MessageSchema);
+
+const UserSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  name: { type: String, required: true },
+  username: { type: String, required: true },
+  avatar: { type: String, default: '' },
+  role: { type: String, default: 'Member' },
+  status: { type: String, enum: ['online', 'busy', 'away', 'offline'], default: 'online' },
+  statusMessage: { type: String, default: '' },
+  email: { type: String, default: '' },
+  timezone: { type: String, default: 'UTC' }
+});
+
+export const UserModel = mongoose.models.User || mongoose.model('User', UserSchema);

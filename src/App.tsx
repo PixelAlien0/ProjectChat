@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { User, Conversation, Message, SvgReactionId, MongoConfig, ReplyPreview } from './types';
 import { StorageService } from './services/storage';
 import { realtimeBus } from './services/broadcast';
+import { MongoApiService } from './services/mongoApi';
 import { ActivityRail } from './components/Sidebar/ActivityRail';
 import { ConversationList } from './components/Sidebar/ConversationList';
 import { ChatHeader } from './components/Chat/ChatHeader';
@@ -10,6 +11,7 @@ import { MessageComposer } from './components/Chat/MessageComposer';
 import { InfoDrawer } from './components/Drawer/InfoDrawer';
 import { MongoConfigModal } from './components/Modals/MongoConfigModal';
 import { NewConversationModal } from './components/Modals/NewConversationModal';
+import { UserProfileModal } from './components/Modals/UserProfileModal';
 
 export const App: React.FC = () => {
   // Initialize storage
@@ -30,6 +32,7 @@ export const App: React.FC = () => {
   const [replyTo, setReplyTo] = useState<ReplyPreview | null>(null);
   const [showMongoModal, setShowMongoModal] = useState<boolean>(false);
   const [showNewModal, setShowNewModal] = useState<boolean>(false);
+  const [showProfileModal, setShowProfileModal] = useState<boolean>(false);
   const [typingMap, setTypingMap] = useState<{ [conversationId: string]: string[] }>({});
 
   const activeUser = users.find((u) => u.id === activeUserId) || users[0];
@@ -45,21 +48,54 @@ export const App: React.FC = () => {
     if (activeConversation) {
       const msgs = StorageService.getMessages(activeConversation.id);
       setMessages(msgs);
+
+      // Initial remote fetch if backend is connected
+      MongoApiService.fetchRemoteMessages(activeConversation.id).then((remoteMsgs) => {
+        if (remoteMsgs && remoteMsgs.length > 0) {
+          setMessages(remoteMsgs);
+          remoteMsgs.forEach((m) => StorageService.saveMessage(m));
+        }
+      });
     }
   }, [activeConversationId]);
 
-  // Subscribe to real-time BroadcastChannel
+  // Real-time Cloud Polling for Multi-Device People-to-People Chat
+  useEffect(() => {
+    if (!activeConversation) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const remoteMsgs = await MongoApiService.fetchRemoteMessages(activeConversation.id);
+        if (remoteMsgs && remoteMsgs.length > 0) {
+          setMessages((prev) => {
+            // Check if there are any new messages
+            const existingIds = new Set(prev.map((m) => m.id));
+            const newOnes = remoteMsgs.filter((m) => !existingIds.has(m.id));
+            if (newOnes.length > 0) {
+              newOnes.forEach((m) => StorageService.saveMessage(m));
+              return [...prev, ...newOnes];
+            }
+            return prev;
+          });
+        }
+      } catch {
+        // Silently continue in offline mode
+      }
+    }, 2500);
+
+    return () => clearInterval(interval);
+  }, [activeConversationId]);
+
+  // Subscribe to real-time BroadcastChannel (for same-machine multi-tab)
   useEffect(() => {
     const unsubscribe = realtimeBus.subscribe((payload) => {
       if (payload.type === 'NEW_MESSAGE') {
-        // Update messages if currently viewed
         if (payload.message.conversationId === activeConversationId) {
           setMessages((prev) => {
             if (prev.some((m) => m.id === payload.message.id)) return prev;
             return [...prev, payload.message];
           });
         }
-        // Update conversation lastMessage
         setConversations(StorageService.getConversations());
       } else if (payload.type === 'REACTION_UPDATED') {
         setMessages((prev) =>
@@ -100,6 +136,7 @@ export const App: React.FC = () => {
       if (e.key === 'Escape') {
         setShowMongoModal(false);
         setShowNewModal(false);
+        setShowProfileModal(false);
         setReplyTo(null);
       }
     };
@@ -119,7 +156,16 @@ export const App: React.FC = () => {
     setActiveUserId(user.id);
   };
 
-  const handleSendMessage = (text: string, attachments?: any[]) => {
+  const handleSaveProfile = (updatedUser: User) => {
+    const updatedUsers = users.map((u) => (u.id === updatedUser.id ? updatedUser : u));
+    localStorage.setItem('pulsechat_users_v1', JSON.stringify(updatedUsers));
+    setUsers(updatedUsers);
+
+    // Save to remote cloud database
+    MongoApiService.saveRemoteUser(updatedUser);
+  };
+
+  const handleSendMessage = async (text: string, attachments?: any[]) => {
     if (!activeConversation) return;
 
     const newMessage: Message = {
@@ -134,92 +180,31 @@ export const App: React.FC = () => {
       replyTo: replyTo || undefined
     };
 
+    // Save locally
     StorageService.saveMessage(newMessage);
     setMessages((prev) => [...prev, newMessage]);
     setConversations(StorageService.getConversations());
     setReplyTo(null);
 
-    // Broadcast in real-time to other tabs
+    // Broadcast across tabs on the same machine
     realtimeBus.broadcast({ type: 'NEW_MESSAGE', message: newMessage });
 
-    // Optional realistic peer response simulation
-    simulatePeerResponse(activeConversation, newMessage);
+    // Send to central cloud MongoDB Atlas database for other real people to receive!
+    MongoApiService.sendRemoteMessage(newMessage);
   };
 
-  const simulatePeerResponse = (conv: Conversation, userMsg: Message) => {
-    // Only simulate if user sends a message in a channel or DM
-    const potentialSenders = conv.memberIds.filter((id) => id !== activeUser.id);
-    if (potentialSenders.length === 0) return;
-
-    const peerId = potentialSenders[0];
-    const peerUser = users.find((u) => u.id === peerId);
-
-    // Realistic simulation after 1.8 seconds
-    setTimeout(() => {
-      // 50% chance peer adds an SVG reaction to the user's message
-      if (Math.random() > 0.4) {
-        const reactions: SvgReactionId[] = ['thumbs_up', 'rocket', 'check', 'fire', 'sparkle'];
-        const randomReaction = reactions[Math.floor(Math.random() * reactions.length)];
-        StorageService.toggleReaction(userMsg.id, randomReaction, peerId);
-        realtimeBus.broadcast({
-          type: 'REACTION_UPDATED',
-          messageId: userMsg.id,
-          reactionId: randomReaction,
-          userId: peerId
-        });
-      }
-
-      // If DM or specific channels, peer sends a thoughtful reply
-      if (conv.type === 'dm' || Math.random() > 0.6) {
-        // Show typing indicator for 1 second first
-        realtimeBus.broadcast({
-          type: 'TYPING_STATUS',
-          conversationId: conv.id,
-          userId: peerId,
-          isTyping: true
-        });
-
-        setTimeout(() => {
-          realtimeBus.broadcast({
-            type: 'TYPING_STATUS',
-            conversationId: conv.id,
-            userId: peerId,
-            isTyping: false
-          });
-
-          const responses = [
-            `Reviewed! The changes align with our Material 3 design spec.`,
-            `Sounds great. The MongoDB Atlas collection index has finished rebuilding.`,
-            `Checked on local dev and preview deployment. Zero layout shifts and GSAP curves look crisp!`,
-            `Agreed! Let's deploy this build to Vercel.`
-          ];
-          const responseText = responses[Math.floor(Math.random() * responses.length)];
-
-          const peerMsg: Message = {
-            id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-            conversationId: conv.id,
-            senderId: peerId,
-            text: responseText,
-            timestamp: Date.now(),
-            status: 'delivered',
-            reactions: []
-          };
-
-          StorageService.saveMessage(peerMsg);
-          realtimeBus.broadcast({ type: 'NEW_MESSAGE', message: peerMsg });
-        }, 1200);
-      }
-    }, 1800);
-  };
-
-  const handleToggleReaction = (messageId: string, reactionId: SvgReactionId) => {
-    StorageService.toggleReaction(messageId, reactionId, activeUser.id);
+  const handleToggleReaction = async (messageId: string, reactionId: SvgReactionId) => {
+    const updated = StorageService.toggleReaction(messageId, reactionId, activeUser.id);
     realtimeBus.broadcast({
       type: 'REACTION_UPDATED',
       messageId,
       reactionId,
       userId: activeUser.id
     });
+
+    if (updated) {
+      MongoApiService.updateRemoteMessage(messageId, { reactions: updated.reactions });
+    }
   };
 
   const handleTogglePin = (messageId: string) => {
@@ -230,6 +215,7 @@ export const App: React.FC = () => {
         messageId,
         isPinned: !!updated.isPinned
       });
+      MongoApiService.updateRemoteMessage(messageId, { isPinned: !!updated.isPinned });
     }
   };
 
@@ -239,6 +225,7 @@ export const App: React.FC = () => {
       type: 'MESSAGE_DELETED',
       messageId
     });
+    MongoApiService.deleteRemoteMessage(messageId);
   };
 
   const handleTyping = (isTyping: boolean) => {
@@ -272,7 +259,6 @@ export const App: React.FC = () => {
     const targetUser = users.find((u) => u.id === targetUserId);
     if (!targetUser) return;
 
-    // Check if DM conversation already exists
     const existing = conversations.find(
       (c) => c.type === 'dm' && c.memberIds.includes(targetUserId) && c.memberIds.includes(activeUser.id)
     );
@@ -311,6 +297,7 @@ export const App: React.FC = () => {
         onSelectUser={handleSelectUser}
         mongoConfig={mongoConfig}
         onOpenMongoModal={() => setShowMongoModal(true)}
+        onOpenProfileModal={() => setShowProfileModal(true)}
         theme={theme}
         onToggleTheme={handleToggleTheme}
         activeTab={activeRailTab}
@@ -345,7 +332,7 @@ export const App: React.FC = () => {
               pinnedCount={pinnedCount}
             />
 
-            {/* In-chat search banner if active */}
+            {/* In-chat search banner */}
             {searchFilter !== '' && (
               <div
                 style={{
@@ -436,6 +423,15 @@ export const App: React.FC = () => {
           onClose={() => setShowNewModal(false)}
           onCreateChannel={handleCreateChannel}
           onStartDm={handleStartDm}
+        />
+      )}
+
+      {/* Real User Profile Modal */}
+      {showProfileModal && (
+        <UserProfileModal
+          currentUser={activeUser}
+          onSave={handleSaveProfile}
+          onClose={() => setShowProfileModal(false)}
         />
       )}
     </div>

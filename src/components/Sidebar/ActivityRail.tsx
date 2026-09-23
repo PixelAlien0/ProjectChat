@@ -10,7 +10,8 @@ import {
   Moon, 
   Check, 
   ChevronUp, 
-  Layers
+  Layers,
+  UserCheck
 } from 'lucide-react';
 
 interface ActivityRailProps {
@@ -19,6 +20,7 @@ interface ActivityRailProps {
   onSelectUser: (user: User) => void;
   mongoConfig: MongoConfig;
   onOpenMongoModal: () => void;
+  onOpenProfileModal: () => void;
   theme: 'dark' | 'light';
   onToggleTheme: () => void;
   activeTab: 'all' | 'channels' | 'dms';
@@ -32,6 +34,7 @@ export const ActivityRail: React.FC<ActivityRailProps> = ({
   onSelectUser,
   mongoConfig,
   onOpenMongoModal,
+  onOpenProfileModal,
   theme,
   onToggleTheme,
   activeTab,
@@ -193,11 +196,36 @@ export const ActivityRail: React.FC<ActivityRailProps> = ({
                   padding: '6px 8px 4px 8px'
                 }}
               >
-                Switch Active Persona
+                Switch Persona
               </div>
-              <p style={{ fontSize: '12px', color: 'var(--color-text-secondary)', padding: '0 8px 8px' }}>
-                Test authentic multi-user messaging right in this browser.
+              <p style={{ fontSize: '11px', color: 'var(--color-text-secondary)', padding: '0 8px 8px' }}>
+                Test multi-user messaging or edit your own profile below:
               </p>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPersonaMenu(false);
+                  onOpenProfileModal();
+                }}
+                style={{
+                  width: '100%',
+                  padding: '8px 10px',
+                  marginBottom: '6px',
+                  borderRadius: 'var(--md-shape-corner-sm)',
+                  backgroundColor: 'var(--color-primary-container)',
+                  color: 'var(--color-primary)',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  cursor: 'pointer'
+                }}
+              >
+                <UserCheck size={14} />
+                <span>Edit Your Profile (Real Name)</span>
+              </button>
 
               {users.map((user) => (
                 <div
